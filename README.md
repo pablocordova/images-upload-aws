@@ -2,10 +2,6 @@
 
 Upload of images with ReactJS and AWS serverless
 
-## Demo
-
-Open [http://18.118.3.11](http://18.118.3.11)
-
 ## Design Explanation
 
 - To speed up development I decided to use Cognito signin/signup instead of my own UI signin/signup.
