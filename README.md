@@ -6,11 +6,11 @@ Upload of images with ReactJS and AWS serverless
 
 - To speed up development I decided to use Cognito signin/signup instead of my own UI signin/signup.
 
-- Each time a user confirm his email code when signing up, the `setup-user` lambda function is executed to create a dynamoDB table for this specific user,  where image information will be storaged.
+- Each time a user confirms his email code when signing up, the `setup-user` lambda function is executed to create a dynamoDB table for this specific user,  where image information will be savedd.
 
 - When the dashboard is shown the `ImagesList` component requests all the images of the user and `get-user-images` lambda function is used to get all the images of this specific user.
 
-- When the user uploads an image, `get-signed-s3-url` lambda function is used to get a signed s3 url to upload the image in S3 and after `save-user-image` lambda function is used to storage the metadata in dynamoDB
+- When the user uploads an image, `get-signed-s3-url` lambda function is used to get a signed s3 url to upload the image in S3 and after `save-user-image` lambda function is used to save the metadata in dynamoDB
 
 ## Build
 
