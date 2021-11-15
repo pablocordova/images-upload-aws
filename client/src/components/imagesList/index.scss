@@ -1,0 +1,33 @@
+.images {
+  &__item {
+    &__title {
+      background-color: rgb(114, 62, 120);
+      color: white;
+      padding: 0.5rem 2rem 0.5rem 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-radius: 1rem;
+      margin: 0.5rem 0 0.5rem 0;
+      &:hover {
+        cursor: pointer;
+      }
+    }
+    &__description {
+      padding: 0.5rem 1rem 0.5rem 1rem;
+    }
+    &__image{
+      text-align: center;
+      & img {
+        max-width: 20rem;
+        max-height: 20rem;
+      }
+    }
+  }
+  &__loading {
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+}

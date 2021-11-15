@@ -1,0 +1,564 @@
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  CognitoUsers:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: users-pool
+      UsernameConfiguration:
+        CaseSensitive: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 1
+      UsernameAttributes:
+        - email
+      MfaConfiguration: 'OFF'
+      LambdaConfig:
+        PostConfirmation: !GetAtt LambdaFunctionSetupUser.Arn
+      Schema:
+        - AttributeDataType: String
+          DeveloperOnlyAttribute: false
+          Mutable: true
+          Name: email
+      AutoVerifiedAttributes:
+        - email
+
+  CognitoClientApp:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref CognitoUsers
+      ClientName: client-app
+      GenerateSecret: false
+      RefreshTokenValidity: 30
+      AllowedOAuthFlows:
+        - code
+        - implicit
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      CallbackURLs: !Ref AllowedCallbacks
+      AllowedOAuthScopes:
+        - email
+        - openid
+      AllowedOAuthFlowsUserPoolClient: true
+      PreventUserExistenceErrors: ENABLED
+      SupportedIdentityProviders:
+        - COGNITO
+  CognitoAuthDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref CognitoUsers
+      Domain: !Ref CognitoAuthDomainName
+
+  S3BucketImages:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref BucketName
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: 
+              - '*'
+            AllowedMethods:
+              - GET
+              - POST
+              - PUT
+            AllowedOrigins:
+              - '*'
+            Id: OpenCors
+            MaxAge: 3600
+  
+  LambdaFunctionSetupUser:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        ZipFile: |
+          const AWS = require("aws-sdk")
+          const regionAWS = "us-east-2"
+          const eventTrigger = "PostConfirmation_ConfirmSignUp"
+          const dynamoApiVersion = "2021-11-12"
+          const primaryKey = "image"
+
+          AWS.config.update({region: regionAWS})
+
+          exports.handler = async (event, context, callback) => {
+              if(event.triggerSource === eventTrigger)  {
+                createTable(event)
+              }
+              callback(null, event)
+          };
+
+          function createTable(event) {
+            const userSub = event.request.userAttributes.sub
+            const tableName = `${userSub}-images`
+            const dynamoDB = new AWS.DynamoDB({apiVersion: dynamoApiVersion})
+            const tableParams = {
+              AttributeDefinitions: [
+                {
+                  AttributeName: primaryKey,
+                  AttributeType: "S"
+                }
+              ],
+              KeySchema: [
+                {
+                  AttributeName: primaryKey,
+                  KeyType: "HASH"
+                }
+              ],
+              ProvisionedThroughput: {
+                ReadCapacityUnits: 1,
+                WriteCapacityUnits: 1
+              },
+              TableName: tableName,
+              StreamSpecification: {
+                StreamEnabled: false
+              }
+            }
+
+            dynamoDB.createTable(tableParams, function(err, data){
+              if (err) {
+                console.log("Error: ", err);
+              }
+            })
+          }
+      FunctionName:
+        Ref: LambdaFuncSetupUserName
+      Handler: index.handler
+      Runtime: nodejs14.x
+      Role: !GetAtt IAMRole.Arn
+  LambdaFunctionGetSignedURL:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        ZipFile: |
+          const AWS = require("aws-sdk")
+          const regionAWS = "us-east-2"
+          const s3 = new AWS.S3()
+          const URL_EXPIRATION_SECONDS = 3600
+          const bucketName = "images-bucket-raysecur-001"
+
+          AWS.config.update({region: regionAWS})
+
+          exports.handler = async (event) => {
+            const data = await getUploadURL(event)
+            return {
+              statusCode: 200,
+              headers: {"Access-Control-Allow-Origin" : "*"},
+              body: data
+            }
+          }
+
+          const getUploadURL = async function(event) {
+            const userSub = event.requestContext.authorizer.claims.sub
+            const randomID = parseInt(Math.random() * 10000000)
+            const Key = `${userSub}-images/${randomID}.jpg`
+
+            const s3Params = {
+              Bucket: bucketName,
+              Key,
+              Expires: URL_EXPIRATION_SECONDS,
+              ContentType: "image/jpeg",
+            }
+
+            const uploadURL = await s3.getSignedUrlPromise("putObject", s3Params)
+            return JSON.stringify({
+              uploadURL,
+              Key
+            })
+          }
+      FunctionName:
+        Ref: LambdaFuncGetSignedS3URLName
+      Handler: index.handler
+      Runtime: nodejs14.x
+      Role: !GetAtt IAMRole.Arn
+  LambdaFunctionSaveUserImage:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk')
+          const dynamoApiVersion = "2021-11-12"
+          const regionAWS = "us-east-2"
+
+          AWS.config.update({region: regionAWS});
+
+          exports.handler = async (event) => {
+            const userSub = event.requestContext.authorizer.claims.sub
+            const tableName = `${userSub}-images`
+            const body = JSON.parse(event.body)
+            
+            const docClient = new AWS.DynamoDB.DocumentClient({apiVersion: dynamoApiVersion});
+
+            const item = {
+              image: body.image,
+              title: body.title,
+              description: body.description
+            }
+            
+            var params = {
+              TableName: tableName,
+              Item: item
+            }
+            
+            try {
+              await docClient.put(params).promise()
+            } catch (err) {console.log(err)}
+            
+            return {
+              statusCode: 200,
+              headers: {"Access-Control-Allow-Origin" : "*"},
+              body: "ok",
+            }
+          }
+      FunctionName:
+        Ref: LambdaFuncSaveUserImageName
+      Handler: index.handler
+      Runtime: nodejs14.x
+      Role: !GetAtt IAMRole.Arn
+  LambdaFunctionGetUserImages:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk')
+          const dynamoApiVersion = "2021-11-12"
+          const regionAWS = "us-east-2"
+          const bucketName = "images-bucket-raysecur-001"
+          const s3 = new AWS.S3()
+
+          AWS.config.update({region: regionAWS});
+
+          exports.handler = async (event) => {
+              const userSub = event.requestContext.authorizer.claims.sub
+              const tableName = `${userSub}-images`
+              
+              const result = await scanTable(tableName, userSub)
+            
+              return {
+                  statusCode: 200,
+                  headers: {"Access-Control-Allow-Origin" : "*"},
+                  body: JSON.stringify(result),
+              };
+          };
+
+          const scanTable = async (tableName, userSub) => {
+              const docClient = new AWS.DynamoDB.DocumentClient({apiVersion: dynamoApiVersion});
+              
+              let params = {
+                  TableName: tableName,
+              }
+
+              let scanResults = []
+              let items = {}
+              do {
+                  items = await docClient.scan(params).promise();
+                  items.Items.forEach((item) => {
+                      const Key = `${userSub}-images/${item.image}`
+                      const params = {Bucket: bucketName, Key: Key};
+                      item.image = s3.getSignedUrl('getObject', params);
+
+                      scanResults.push(item)
+                  });
+                  params.ExclusiveStartKey = items.LastEvaluatedKey;
+              } while (typeof items.LastEvaluatedKey !== "undefined");
+              
+              return scanResults;
+          }
+      FunctionName:
+        Ref: LambdaFuncGetUserImagesName
+      Handler: index.handler
+      Runtime: nodejs14.x
+      Role: !GetAtt IAMRole.Arn
+  
+  LambdaInvocationSetupUserPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaFunctionSetupUser.Arn
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt CognitoUsers.Arn
+  LambdaInvocationGetSignedURLPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaFunctionGetSignedURL.Arn
+      Principal: apigateway.amazonaws.com
+    DependsOn:
+      - APIGatewayDeployment
+  LambdaInvocationSaveUserPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaFunctionSaveUserImage.Arn
+      Principal: apigateway.amazonaws.com
+    DependsOn:
+      - APIGatewayDeployment
+  LambdaInvocationGetUserImagesPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaFunctionGetUserImages.Arn
+      Principal: apigateway.amazonaws.com
+    DependsOn:
+      - APIGatewayDeployment
+
+  APIGatewayRestAPI:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Name:
+        Ref: APIName
+    DependsOn:
+      - LambdaFunctionGetSignedURL
+      - LambdaFunctionSaveUserImage
+      - LambdaFunctionGetUserImages
+  APIGatewayAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      IdentitySource: method.request.header.authorization
+      Name: CognitoAuthorizer
+      ProviderARNs:
+        - Fn::GetAtt:
+            - CognitoUsers
+            - Arn
+      RestApiId: !Ref APIGatewayRestAPI
+      Type: COGNITO_USER_POOLS
+
+  APIGatewayResourceImages:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart:
+        Ref: ApiGatewayResourceImagesName
+    DependsOn:
+      - APIGatewayRestAPI
+  APIGatewayMethodImagesGET:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayResourceImages
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref APIGatewayAuthorizer
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+          - LambdaFuncNameArn: !GetAtt LambdaFunctionGetUserImages.Arn
+    DependsOn:
+      - APIGatewayResourceImages
+  APIGatewayMethodImagesPOST:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayResourceImages
+      HttpMethod: POST
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref APIGatewayAuthorizer
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+          - LambdaFuncNameArn: !GetAtt LambdaFunctionSaveUserImage.Arn
+    DependsOn:
+      - APIGatewayResourceImages
+  APIGatewayMethodImagesOPTIONS:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayResourceImages
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'GET,POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: 200
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+          method.response.header.Access-Control-Allow-Headers: false
+          method.response.header.Access-Control-Allow-Methods: false
+          method.response.header.Access-Control-Allow-Origin: false
+
+  APIGatewayResourceUpload:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ParentId: !GetAtt
+        - APIGatewayRestAPI
+        - RootResourceId
+      PathPart:
+        Ref: ApiGatewayResourceUploadName
+    DependsOn:
+      - APIGatewayRestAPI
+  APIGatewayMethodUploadGET:
+    Type: 'AWS::ApiGateway::Method'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayResourceUpload
+      HttpMethod: GET
+      AuthorizationType: COGNITO_USER_POOLS
+      AuthorizerId: !Ref APIGatewayAuthorizer
+      MethodResponses:
+        - StatusCode: 200
+      Integration:
+        Type: AWS_PROXY
+        IntegrationResponses:
+          - StatusCode: 200
+        IntegrationHttpMethod: POST
+        Uri: !Sub
+          - >-
+            arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaFuncNameArn}/invocations
+          - LambdaFuncNameArn: !GetAtt LambdaFunctionGetSignedURL.Arn
+    DependsOn:
+      - APIGatewayResourceUpload
+  APIGatewayMethodUploadOPTIONS:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      ResourceId: !Ref APIGatewayResourceUpload
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: 200
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+          method.response.header.Access-Control-Allow-Headers: false
+          method.response.header.Access-Control-Allow-Methods: false
+          method.response.header.Access-Control-Allow-Origin: false
+
+  APIGatewayDeployment:
+    Type: 'AWS::ApiGateway::Deployment'
+    Properties:
+      RestApiId: !Ref APIGatewayRestAPI
+      StageName:
+        Ref: EnvironmentName
+    DependsOn:
+      - APIGatewayMethodImagesGET
+      - APIGatewayMethodImagesPOST
+      - APIGatewayMethodUploadGET
+
+  IAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: LambdaDynamoS3Policy-2020-11-10
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:BatchGet*'
+                  - 'dynamodb:DescribeStream'
+                  - 'dynamodb:DescribeTable'
+                  - 'dynamodb:BatchWrite*'
+                  - 'dynamodb:Get*'
+                  - 'dynamodb:TagResource'
+                  - 'dynamodb:UntagResource'
+                  - 'dynamodb:CreateTable'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:Delete*'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:Query'
+                  - 'dynamodb:Update*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 's3:*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogStream'
+                  - 'logs:CreateLogGroup'
+                  - 'logs:PutLogEvents'
+                Resource: '*'
+Parameters:
+  CognitoAuthDomainName:
+    Type: String
+    Default: raysecur-001
+  AllowedCallbacks:
+    Type: List<String>
+    Description: URL for callback after cognito login
+  ApiGatewayResourceUploadName:
+    Type: String
+    Default: upload
+  ApiGatewayResourceImagesName:
+    Type: String
+    Default: images
+  LambdaFuncSetupUserName:
+    Type: String
+    Default: setup-user
+  LambdaFuncGetSignedS3URLName:
+    Type: String
+    Default: get-signed-s3-url
+  LambdaFuncSaveUserImageName:
+    Type: String
+    Default: save-user-image
+  LambdaFuncGetUserImagesName:
+    Type: String
+    Default: get-user-images
+  BucketName:
+    Type: String
+    Default: images-bucket-raysecur-001
+  DynamoDBApiVersion:
+    Type: String
+    Default: 2021-11-10
+  APIName:
+    Type: String
+    Default: api-prod
+  EnvironmentName:
+    Type: String
+    Default: prod

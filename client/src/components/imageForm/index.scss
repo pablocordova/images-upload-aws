@@ -1,0 +1,11 @@
+.image-form{
+  & > div{
+    margin: 1rem 10rem 0 10rem;
+  }
+  &__upload-button{
+    text-align: end;
+  }
+  & label {
+    font-weight: bold;
+  }
+}

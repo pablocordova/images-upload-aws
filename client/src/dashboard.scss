@@ -1,0 +1,19 @@
+.dashboard{
+  &__body{
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    & .images {
+      height: 90vh;
+      overflow: auto;
+      border-left: 1px solid gray;
+    }
+  }
+  &__loading {
+    height: 100%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    position: absolute;
+    left: 50%;
+  }
+}

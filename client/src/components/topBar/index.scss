@@ -1,0 +1,17 @@
+.top-bar{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 10vh;
+  background-color:#166ADA;
+  color: white;
+  padding: 0 2rem 0 2rem;
+  font-size: 1.5rem;
+  &__buttons {
+    &__logout {
+      &:hover{
+        cursor: pointer;
+      }
+    }
+  }
+}
