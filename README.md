@@ -23,7 +23,7 @@ Upload of images with ReactJS and AWS serverless
 
 1) Clone the repository
 2) Use the file `/api/cloudFormationTemplate.yml` to deploy the resources in AWS, you need to fill only 2 fields:
-    - **Stack Name**: <any name>
+    - **Stack Name**: any name
     - **AllowedCallbacks**: http://localhost:3000
 3) Once the resources are deployed in AWS, replace the respective variables in `/client/src/env.tsx`
     - CLIENT_ID -> (Cognito -> users-pool -> App clients -> App client id)
